@@ -170,6 +170,98 @@ export class ClientQuarkUcTv {
     if (d.refresh_token) this.addition.refresh_token = d.refresh_token
   }
 
+  /**
+   * OAuth 扫码流程专用请求：访问 /oauth/* 端点，此时尚无 access_token，
+   * 仅使用签名头，不做 token 失效重试（避免与扫码轮询相互干扰）。
+   */
+  private async requestOAuth<T = any>(
+    pathname: string,
+    method: string,
+    extraQuery: Record<string, string> = {},
+  ): Promise<T> {
+    const { tm, token, reqId } = await this.generateSign(method, pathname)
+    const qs = new URLSearchParams({
+      req_id: reqId,
+      ...this.deviceQuery(),
+      ...extraQuery,
+    })
+    const resp = await fetch(`${this.conf.api}${pathname}?${qs.toString()}`, {
+      method,
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "User-Agent": UA,
+        "x-pan-tm": tm,
+        "x-pan-token": token,
+        "x-pan-client-id": this.conf.clientID,
+      },
+    })
+    return resp.json().catch(() => ({ status: -1, errno: -1 }) as any)
+  }
+
+  /** 获取登录二维码（qr_data 已是 PNG 图片的 base64）与轮询令牌 */
+  async getLoginCode(): Promise<{ qrData: string; queryToken: string }> {
+    const resp: any = await this.requestOAuth("GET", "/oauth/authorize", {
+      auth_type: "code",
+      client_id: this.conf.clientID,
+      scope: "netdisk",
+      qrcode: "1",
+      qr_width: "460",
+      qr_height: "460",
+    })
+    if (resp.status !== 0 || !resp.qr_data) {
+      throw new Error(
+        `[QuarkTV] get login code failed: ${resp.error_info || "unknown"}`,
+      )
+    }
+    return { qrData: resp.qr_data, queryToken: resp.query_token }
+  }
+
+  /**
+   * 轮询扫码状态：
+   * - 未扫码/未确认返回 null（夸克返回 errno 11003 用户未确认授权）
+   * - 已扫码确认返回授权 code
+   */
+  async getCode(queryToken: string): Promise<string | null> {
+    const resp: any = await this.requestOAuth("GET", "/oauth/code", {
+      client_id: this.conf.clientID,
+      scope: "netdisk",
+      query_token: queryToken,
+    })
+    if (resp.errno === 11003 || resp.status === -1 || !resp.code) {
+      return null
+    }
+    return resp.code
+  }
+
+  /** 用扫码得到的 code 换取 access_token / refresh_token */
+  async getRefreshTokenByCode(
+    code: string,
+  ): Promise<{ access_token: string; refresh_token: string }> {
+    const pathname = "/token"
+    const { reqId } = await this.generateSign("POST", pathname)
+    const body: Record<string, string> = {
+      req_id: reqId,
+      ...this.deviceQuery(),
+      code,
+    }
+    const resp = await fetch(`${this.conf.codeApi}${pathname}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    const data: any = await resp.json().catch(() => ({}))
+    if (data?.code !== 200)
+      throw new Error(`[QuarkTV] ${data?.message || "token exchange failed"}`)
+    const d = data.data || {}
+    if (!d.access_token) throw new Error("[QuarkTV] access token empty")
+    this.accessToken = d.access_token
+    if (d.refresh_token) this.addition.refresh_token = d.refresh_token
+    return {
+      access_token: d.access_token,
+      refresh_token: d.refresh_token || this.addition.refresh_token,
+    }
+  }
+
   async getFiles(parentFid: string): Promise<QuarkTvFile[]> {
     const all: QuarkTvFile[] = []
     let pageIndex = 0
