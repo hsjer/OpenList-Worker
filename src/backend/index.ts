@@ -7,6 +7,7 @@ import { s3Router } from "./server/s3"
 import { setEnvCtx } from "./internal/model/db"
 import { getStoreConfigErrorDetail } from "./internal/model/store/backend"
 import { storageErrorSummary, uiStorageError } from "./server/storage-error"
+import { quarkTvQrRouter } from "./server/quark_tv_qr"
 
 const app = new Hono()
 
@@ -171,6 +172,10 @@ app.route("/dav", webdavRouter)
 
 // S3 网关（/s3/*），必须在 SPA 兜底之前挂载
 app.route("/s3", s3Router)
+
+// Quark/UC TV 扫码登录页（补全驱动缺失的扫码获取 refresh_token 流程），
+// 必须在 SPA 兜底之前挂载，否则会被 app.all("*") 当成前端路由吞掉。
+app.route("/quark_tv_qr", quarkTvQrRouter)
 
 // SPA 兜底 HTML（由 EdgeOne 入口 api/_makers.ts 在构建期注入 dist/index.html；
 // 其他平台入口不注入，保持原有 ASSETS / 404 行为）
